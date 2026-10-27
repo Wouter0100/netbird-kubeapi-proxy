@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,11 +14,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+
 	"github.com/netbirdio/netbird/client/cmd"
 	"github.com/netbirdio/netbird/client/embed"
+	"github.com/netbirdio/netbird/shared/management/client"
 	netbird "github.com/netbirdio/netbird/shared/management/client/rest"
 
 	"github.com/netbirdio/netbird-kubeapi-proxy/internal/proxy"
@@ -90,6 +95,13 @@ func run(ctx context.Context, kubeAPIServer, mgmtURL, apiKey, setupKey, instance
 	}
 	g.Go(func() error {
 		<-gCtx.Done()
+		deregisterCtx, deregisterCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := deregisterPeer(deregisterCtx, embedClient); err != nil {
+			slog.Default().Warn("peer deregistration failed, falling back to management ephemeral cleanup", "error", err)
+		} else {
+			slog.Default().Info("deregistered peer from management")
+		}
+		deregisterCancel()
 		return embedClient.Stop(context.Background())
 	})
 
@@ -140,4 +152,28 @@ func run(ctx context.Context, kubeAPIServer, mgmtURL, apiKey, setupKey, instance
 		return err
 	}
 	return nil
+}
+
+// deregisterPeer deletes this peer from Management with the peer-authenticated
+// Logout RPC, so it disappears at once instead of lingering until Management's
+// ephemeral cleanup. It authenticates with the peer's own WireGuard key, so no
+// API key is needed.
+func deregisterPeer(ctx context.Context, embedClient *embed.Client) error {
+	cfg, err := embedClient.GetConfig()
+	if err != nil {
+		return fmt.Errorf("get config: %w", err)
+	}
+	if cfg.ManagementURL == nil {
+		return errors.New("no management URL in config")
+	}
+	key, err := wgtypes.ParseKey(cfg.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+	mgmClient, err := client.NewClient(ctx, cfg.ManagementURL.Host, key, cfg.ManagementURL.Scheme == "https")
+	if err != nil {
+		return fmt.Errorf("connect to management: %w", err)
+	}
+	defer func() { _ = mgmClient.Close() }()
+	return mgmClient.Logout()
 }
