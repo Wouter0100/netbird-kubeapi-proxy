@@ -26,6 +26,7 @@ import (
 	netbird "github.com/netbirdio/netbird/shared/management/client/rest"
 
 	"github.com/netbirdio/netbird-kubeapi-proxy/internal/proxy"
+	"github.com/netbirdio/netbird-kubeapi-proxy/internal/version"
 )
 
 func main() {
@@ -73,10 +74,7 @@ func run(ctx context.Context, kubeAPIServer, mgmtURL, apiKey, setupKey, instance
 		return errors.New("kubernetes-api-server must be an absolute https URL")
 	}
 
-	netbirdClient := netbird.NewWithOptions(
-		netbird.WithManagementURL(mgmtURL),
-		netbird.WithBearerToken(apiKey),
-	)
+	netbirdClient := newManagementClient(mgmtURL, apiKey)
 
 	opts := embed.Options{
 		ManagementURL: mgmtURL,
@@ -152,6 +150,14 @@ func run(ctx context.Context, kubeAPIServer, mgmtURL, apiKey, setupKey, instance
 		return err
 	}
 	return nil
+}
+
+func newManagementClient(mgmtURL, apiKey string) *netbird.Client {
+	return netbird.NewWithOptions(
+		netbird.WithManagementURL(mgmtURL),
+		netbird.WithBearerToken(apiKey),
+		netbird.WithUserAgent(version.UserAgent()),
+	)
 }
 
 // deregisterPeer deletes this peer from Management with the peer-authenticated
