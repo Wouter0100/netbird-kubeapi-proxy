@@ -89,27 +89,27 @@ func run(ctx context.Context, kubeAPIServer, mgmtURL, apiKey, setupKey, instance
 	}
 	err = embedClient.Start(ctx)
 	if err != nil {
+		// Start can fail after login has already registered the peer.
+		deregisterPeerBestEffort(embedClient)
 		return err
 	}
 	g.Go(func() error {
 		<-gCtx.Done()
-		deregisterCtx, deregisterCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := deregisterPeer(deregisterCtx, embedClient); err != nil {
-			slog.Default().Warn("peer deregistration failed, falling back to management ephemeral cleanup", "error", err)
-		} else {
-			slog.Default().Info("deregistered peer from management")
-		}
-		deregisterCancel()
+		deregisterPeerBestEffort(embedClient)
 		return embedClient.Stop(context.Background())
 	})
 
 	peerStore := proxy.NewPeerStore(netbirdClient.Peers)
 	proxySrv, err := proxy.Server(embedClient, peerStore, kubeAPIServerURL)
 	if err != nil {
+		cancel()
+		_ = g.Wait()
 		return err
 	}
 	listener, err := embedClient.ListenTCP(":443")
 	if err != nil {
+		cancel()
+		_ = g.Wait()
 		return err
 	}
 	g.Go(func() error {
@@ -158,6 +158,18 @@ func newManagementClient(mgmtURL, apiKey string) *netbird.Client {
 		netbird.WithBearerToken(apiKey),
 		netbird.WithUserAgent(version.UserAgent()),
 	)
+}
+
+// deregisterPeerBestEffort deregisters the peer within 5 seconds and only logs a
+// failure, since Management's ephemeral cleanup removes the peer later anyway.
+func deregisterPeerBestEffort(embedClient *embed.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := deregisterPeer(ctx, embedClient); err != nil {
+		slog.Default().Warn("peer deregistration failed, falling back to management ephemeral cleanup", "error", err)
+		return
+	}
+	slog.Default().Info("deregistered peer from management")
 }
 
 // deregisterPeer deletes this peer from Management with the peer-authenticated
